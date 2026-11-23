@@ -1,21 +1,27 @@
-import { useEffect, useState } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as ImagePicker from 'expo-image-picker';
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as ImagePicker from "expo-image-picker";
+import { useEffect, useState } from "react";
 import {
   Alert,
   Image,
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
-import { useProfilePhoto } from '@/components/profile-photo-context';
+import { useProfilePhoto } from "@/components/profile-photo-context";
+import {
+  disableDailyReminders,
+  enableDailyReminders,
+} from "@/utils/notification";
 
-const PROFILE_STORAGE_KEY = '@period-cycle/profile';
+const PROFILE_STORAGE_KEY = "@period-cycle/profile";
+const NOTIFICATION_IDS_KEY = "@period-cycle/notification-ids";
 
 type SavedProfile = {
   name: string;
@@ -25,28 +31,35 @@ type SavedProfile = {
 };
 
 function isSavedProfile(value: unknown): value is SavedProfile {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== "object" || value === null) {
     return false;
   }
 
   const profile = value as Record<string, unknown>;
+
   return (
-    typeof profile.name === 'string' &&
-    typeof profile.age === 'string' &&
-    typeof profile.height === 'string' &&
-    (typeof profile.profilePhoto === 'string' || profile.profilePhoto === null)
+    typeof profile.name === "string" &&
+    typeof profile.age === "string" &&
+    typeof profile.height === "string" &&
+    (typeof profile.profilePhoto === "string" || profile.profilePhoto === null)
   );
 }
 
 export default function ProfileScreen() {
-  const [name, setName] = useState('');
-  const [age, setAge] = useState('');
-  const [height, setHeight] = useState('');
-  const { profilePhoto, setProfilePhoto } = useProfilePhoto();
+  const [name, setName] = useState("");
+  const [age, setAge] = useState("");
+  const [height, setHeight] = useState("");
+
+  const { setProfileName, profilePhoto, setProfilePhoto } = useProfilePhoto();
+
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+
+  const [remindersEnabled, setRemindersEnabled] = useState(false);
+  const [isUpdatingReminders, setIsUpdatingReminders] = useState(false);
+
   const [saveMessage, setSaveMessage] = useState<{
-    type: 'success' | 'error';
+    type: "success" | "error";
     text: string;
   } | null>(null);
 
@@ -56,26 +69,27 @@ export default function ProfileScreen() {
     async function loadProfile() {
       try {
         const storedProfile = await AsyncStorage.getItem(PROFILE_STORAGE_KEY);
-        if (storedProfile === null) {
-          return;
-        }
 
-        const parsedProfile: unknown = JSON.parse(storedProfile);
-        if (!isSavedProfile(parsedProfile)) {
-          throw new Error('Saved profile has an unexpected format.');
-        }
+        if (storedProfile !== null) {
+          const parsedProfile: unknown = JSON.parse(storedProfile);
 
-        if (isMounted) {
-          setName(parsedProfile.name);
-          setAge(parsedProfile.age);
-          setHeight(parsedProfile.height);
-          setProfilePhoto(parsedProfile.profilePhoto);
+          if (!isSavedProfile(parsedProfile)) {
+            throw new Error("Saved profile has an unexpected format.");
+          }
+
+          if (isMounted) {
+            setName(parsedProfile.name);
+            setAge(parsedProfile.age);
+            setHeight(parsedProfile.height);
+            setProfileName(parsedProfile.name);
+            setProfilePhoto(parsedProfile.profilePhoto);
+          }
         }
       } catch {
         if (isMounted) {
           setSaveMessage({
-            type: 'error',
-            text: 'Could not load your saved profile. You can still update and save it.',
+            type: "error",
+            text: "Could not load your saved profile. You can still update and save it.",
           });
         }
       } finally {
@@ -85,11 +99,31 @@ export default function ProfileScreen() {
       }
     }
 
+    async function loadReminderStatus() {
+      try {
+        const savedIds = await AsyncStorage.getItem(NOTIFICATION_IDS_KEY);
+
+        if (!isMounted) return;
+
+        if (savedIds) {
+          const parsedIds: unknown = JSON.parse(savedIds);
+
+          setRemindersEnabled(Array.isArray(parsedIds) && parsedIds.length > 0);
+        } else {
+          setRemindersEnabled(false);
+        }
+      } catch (error) {
+        console.error("Unable to load reminder status:", error);
+      }
+    }
+
     void loadProfile();
+    void loadReminderStatus();
+
     return () => {
       isMounted = false;
     };
-  }, [setProfilePhoto]);
+  }, [setProfileName, setProfilePhoto]);
 
   function clearSaveMessage() {
     setSaveMessage(null);
@@ -100,13 +134,28 @@ export default function ProfileScreen() {
     setSaveMessage(null);
 
     try {
-      const profile: SavedProfile = { name, age, height, profilePhoto };
+      const cleanedName = name.trim();
+
+      const profile: SavedProfile = {
+        name: cleanedName,
+        age,
+        height,
+        profilePhoto,
+      };
+
       await AsyncStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
-      setSaveMessage({ type: 'success', text: 'Your profile has been saved on this device.' });
+
+      setName(cleanedName);
+      setProfileName(cleanedName);
+
+      setSaveMessage({
+        type: "success",
+        text: "Your profile has been saved on this device.",
+      });
     } catch {
       setSaveMessage({
-        type: 'error',
-        text: 'Could not save your profile. Please try again.',
+        type: "error",
+        text: "Could not save your profile. Please try again.",
       });
     } finally {
       setIsSaving(false);
@@ -116,7 +165,7 @@ export default function ProfileScreen() {
   async function chooseProfilePhoto() {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
+        mediaTypes: ["images"],
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.8,
@@ -127,26 +176,77 @@ export default function ProfileScreen() {
         clearSaveMessage();
       }
     } catch {
-      Alert.alert('Unable to select photo', 'Please try choosing a photo again.');
+      Alert.alert(
+        "Unable to select photo",
+        "Please try choosing a photo again.",
+      );
+    }
+  }
+
+  async function toggleDailyReminders(value: boolean) {
+    if (isUpdatingReminders) return;
+
+    setIsUpdatingReminders(true);
+
+    try {
+      if (value) {
+        const success = await enableDailyReminders();
+
+        if (!success) {
+          Alert.alert(
+            "Notifications unavailable",
+            "Please allow notifications in your device settings and try again.",
+          );
+          return;
+        }
+
+        setRemindersEnabled(true);
+
+        Alert.alert(
+          "Reminders enabled 💗",
+          "Your daily wellness reminders have been scheduled.",
+        );
+      } else {
+        await disableDailyReminders();
+
+        setRemindersEnabled(false);
+
+        Alert.alert(
+          "Reminders disabled",
+          "Your daily reminders have been turned off.",
+        );
+      }
+    } catch (error) {
+      console.error("Unable to update reminders:", error);
+
+      Alert.alert(
+        "Something went wrong",
+        "Could not update your notification settings. Please try again.",
+      );
+    } finally {
+      setIsUpdatingReminders(false);
     }
   }
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={['top']}>
+    <SafeAreaView style={styles.safeArea} edges={["top"]}>
       <ScrollView
         contentContainerStyle={styles.container}
         keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}>
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.header}>
           <View style={styles.headerTopRow}>
             <View>
               <Text style={styles.eyebrow}>YOUR WELLNESS SPACE</Text>
               <Text style={styles.title}>My profile</Text>
             </View>
+
             <View style={styles.headerFlower}>
               <Text style={styles.headerFlowerText}>✿</Text>
             </View>
           </View>
+
           <Text style={styles.subtitle}>
             A little about you helps make your cycle journey feel more personal.
           </Text>
@@ -154,34 +254,56 @@ export default function ProfileScreen() {
 
         <View style={styles.profileCard}>
           <View style={styles.profileCardDecoration} />
+
           <Pressable
-            accessibilityLabel={profilePhoto ? 'Change profile photo' : 'Add profile photo'}
+            accessibilityLabel={
+              profilePhoto ? "Change profile photo" : "Add profile photo"
+            }
             accessibilityRole="button"
             disabled={isLoading || isSaving}
             onPress={chooseProfilePhoto}
-            style={({ pressed }) => [styles.avatarButton, pressed && styles.pressed]}>
+            style={({ pressed }) => [
+              styles.avatarButton,
+              pressed && styles.pressed,
+            ]}
+          >
             <View style={styles.avatar}>
               {profilePhoto ? (
-                <Image source={{ uri: profilePhoto }} style={styles.avatarImage} />
+                <Image
+                  source={{ uri: profilePhoto }}
+                  style={styles.avatarImage}
+                />
               ) : (
                 <Text style={styles.avatarFlower}>✿</Text>
               )}
             </View>
+
             <View style={styles.cameraBadge}>
               <Text style={styles.cameraBadgeText}>+</Text>
             </View>
           </Pressable>
-          <Text style={styles.profileName}>{name.trim() || 'Your profile'}</Text>
+
+          <Text style={styles.profileName}>
+            {name.trim() || "Your profile"}
+          </Text>
+
           <Pressable
             accessibilityRole="button"
             disabled={isLoading || isSaving}
             onPress={chooseProfilePhoto}
-            style={({ pressed }) => [styles.photoButton, pressed && styles.pressed]}>
+            style={({ pressed }) => [
+              styles.photoButton,
+              pressed && styles.pressed,
+            ]}
+          >
             <Text style={styles.photoButtonText}>
-              {profilePhoto ? 'Change photo' : 'Add a profile photo'}
+              {profilePhoto ? "Change photo" : "Add a profile photo"}
             </Text>
           </Pressable>
-          <Text style={styles.photoHint}>A friendly face for your wellness space</Text>
+
+          <Text style={styles.photoHint}>
+            A friendly face for your wellness space
+          </Text>
         </View>
 
         <View style={styles.card}>
@@ -189,13 +311,18 @@ export default function ProfileScreen() {
             <View style={styles.sectionIcon}>
               <Text style={styles.sectionIconText}>♡</Text>
             </View>
+
             <View style={styles.sectionHeadingCopy}>
               <Text style={styles.sectionTitle}>About you</Text>
-              <Text style={styles.sectionSubtitle}>Your details, just for you</Text>
+              <Text style={styles.sectionSubtitle}>
+                Your details, just for you
+              </Text>
             </View>
           </View>
+
           <View style={styles.field}>
             <Text style={styles.label}>Name</Text>
+
             <View style={styles.inputWithUnit}>
               <TextInput
                 accessibilityLabel="Name"
@@ -216,6 +343,7 @@ export default function ProfileScreen() {
 
           <View style={styles.field}>
             <Text style={styles.label}>Age</Text>
+
             <View style={styles.inputWithUnit}>
               <TextInput
                 accessibilityLabel="Age"
@@ -237,6 +365,7 @@ export default function ProfileScreen() {
 
           <View style={styles.field}>
             <Text style={styles.label}>Height</Text>
+
             <View style={styles.inputWithUnit}>
               <TextInput
                 accessibilityLabel="Height"
@@ -257,28 +386,92 @@ export default function ProfileScreen() {
           </View>
         </View>
 
+        {/* DAILY NOTIFICATION SETTINGS */}
+
+        <View style={styles.card}>
+          <View style={styles.notificationRow}>
+            <View style={styles.notificationIcon}>
+              <Text style={styles.notificationIconText}>♡</Text>
+            </View>
+
+            <View style={styles.notificationCopy}>
+              <Text style={styles.sectionTitle}>Daily reminders</Text>
+
+              <Text style={styles.sectionSubtitle}>
+                Gentle wellness reminders every 3 hours.
+              </Text>
+            </View>
+
+            <Switch
+              accessibilityLabel="Enable daily reminders"
+              value={remindersEnabled}
+              disabled={isUpdatingReminders}
+              onValueChange={toggleDailyReminders}
+              trackColor={{
+                false: "#E5DDE3",
+                true: "#F3A1B9",
+              }}
+              thumbColor={remindersEnabled ? "#E75E86" : "#FFFFFF"}
+            />
+          </View>
+
+          <View style={styles.notificationDivider} />
+
+          <Text style={styles.reminderHeading}>Your reminder schedule</Text>
+
+          <View style={styles.reminderTimes}>
+            {[
+              "6:00 AM",
+              "9:00 AM",
+              "12:00 PM",
+              "3:00 PM",
+              "6:00 PM",
+              "9:00 PM",
+            ].map((time) => (
+              <View key={time} style={styles.reminderTimeItem}>
+                <Text style={styles.reminderTimeText}>{time}</Text>
+              </View>
+            ))}
+          </View>
+
+          <Text style={styles.photoHint}>
+            Turn reminders on or off whenever you like.
+          </Text>
+        </View>
+
         <Pressable
           accessibilityRole="button"
-          accessibilityState={{ disabled: isLoading || isSaving }}
+          accessibilityState={{
+            disabled: isLoading || isSaving,
+          }}
           disabled={isLoading || isSaving}
           onPress={() => void saveProfile()}
           style={({ pressed }) => [
             styles.saveButton,
             (isLoading || isSaving) && styles.saveButtonDisabled,
             pressed && !isLoading && !isSaving && styles.pressed,
-          ]}>
+          ]}
+        >
           <Text style={styles.saveButtonText}>
-            {isLoading ? 'Loading profile...' : isSaving ? 'Saving...' : 'Save profile'}
+            {isLoading
+              ? "Loading profile..."
+              : isSaving
+                ? "Saving..."
+                : "Save profile"}
           </Text>
         </Pressable>
+
         {saveMessage ? (
           <Text
             accessibilityLiveRegion="polite"
-            accessibilityRole={saveMessage.type === 'error' ? 'alert' : 'text'}
+            accessibilityRole={saveMessage.type === "error" ? "alert" : "text"}
             style={[
               styles.saveMessage,
-              saveMessage.type === 'error' ? styles.saveError : styles.saveSuccess,
-            ]}>
+              saveMessage.type === "error"
+                ? styles.saveError
+                : styles.saveSuccess,
+            ]}
+          >
             {saveMessage.text}
           </Text>
         ) : null}
@@ -290,13 +483,13 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#FFF8FB',
+    backgroundColor: "#FFF8FB",
   },
   container: {
     flexGrow: 1,
-    width: '100%',
+    width: "100%",
     maxWidth: 520,
-    alignSelf: 'center',
+    alignSelf: "center",
     paddingHorizontal: 20,
     paddingTop: 16,
     paddingBottom: 28,
@@ -306,56 +499,56 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   headerTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
   eyebrow: {
-    color: '#B34E70',
+    color: "#B34E70",
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: "700",
     letterSpacing: 1.2,
     marginBottom: 3,
   },
   title: {
-    color: '#292842',
+    color: "#292842",
     fontSize: 28,
-    fontWeight: '700',
+    fontWeight: "700",
   },
   headerFlower: {
     width: 44,
     height: 44,
     borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FCE6EE',
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FCE6EE",
   },
   headerFlowerText: {
-    color: '#E75E86',
+    color: "#E75E86",
     fontSize: 25,
   },
   subtitle: {
-    color: '#777382',
+    color: "#777382",
     fontSize: 14,
     lineHeight: 21,
   },
   profileCard: {
-    alignItems: 'center',
-    overflow: 'hidden',
+    alignItems: "center",
+    overflow: "hidden",
     paddingHorizontal: 18,
     paddingTop: 22,
     paddingBottom: 18,
     borderRadius: 22,
-    backgroundColor: '#FCEAF0',
+    backgroundColor: "#FCEAF0",
   },
   profileCardDecoration: {
-    position: 'absolute',
+    position: "absolute",
     width: 150,
     height: 150,
     top: -105,
     right: -42,
     borderRadius: 75,
-    backgroundColor: '#F8D8E4',
+    backgroundColor: "#F8D8E4",
   },
   avatarButton: {
     marginBottom: 10,
@@ -364,76 +557,76 @@ const styles = StyleSheet.create({
     width: 104,
     height: 104,
     borderWidth: 4,
-    borderColor: '#FFFFFF',
+    borderColor: "#FFFFFF",
     borderRadius: 52,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-    backgroundColor: '#F8D8E4',
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    backgroundColor: "#F8D8E4",
   },
   avatarImage: {
-    width: '100%',
-    height: '100%',
+    width: "100%",
+    height: "100%",
   },
   avatarFlower: {
-    color: '#E75E86',
+    color: "#E75E86",
     fontSize: 46,
   },
   cameraBadge: {
-    position: 'absolute',
+    position: "absolute",
     right: 1,
     bottom: 1,
     width: 29,
     height: 29,
     borderWidth: 2,
-    borderColor: '#FCEAF0',
+    borderColor: "#FCEAF0",
     borderRadius: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#E75E86',
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#E75E86",
   },
   cameraBadgeText: {
-    color: '#FFFFFF',
+    color: "#FFFFFF",
     fontSize: 21,
-    fontWeight: '500',
+    fontWeight: "500",
     lineHeight: 24,
   },
   profileName: {
-    color: '#292842',
+    color: "#292842",
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: "700",
   },
   photoButton: {
     marginTop: 10,
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: "#FFFFFF",
   },
   photoButtonText: {
-    color: '#B34E70',
+    color: "#B34E70",
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: "700",
   },
   photoHint: {
     marginTop: 8,
-    color: '#8D7480',
+    color: "#8D7480",
     fontSize: 12,
   },
   card: {
     padding: 16,
     borderRadius: 22,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: "#FFFFFF",
     gap: 17,
-    shadowColor: '#4F3B4C',
+    shadowColor: "#4F3B4C",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.07,
     shadowRadius: 8,
     elevation: 2,
   },
   sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 11,
     marginBottom: 1,
   },
@@ -441,12 +634,12 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FFF0F4',
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFF0F4",
   },
   sectionIconText: {
-    color: '#E75E86',
+    color: "#E75E86",
     fontSize: 25,
     lineHeight: 29,
   },
@@ -455,50 +648,97 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   sectionTitle: {
-    color: '#292842',
+    color: "#292842",
     fontSize: 17,
-    fontWeight: '700',
+    fontWeight: "700",
   },
   sectionSubtitle: {
-    color: '#8D8994',
+    color: "#8D8994",
     fontSize: 12,
+    lineHeight: 18,
   },
   field: {
     gap: 8,
   },
   label: {
-    color: '#343348',
+    color: "#343348",
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: "600",
   },
   inputWithUnit: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     borderWidth: 1,
-    borderColor: '#EEE8ED',
+    borderColor: "#EEE8ED",
     borderRadius: 14,
     paddingHorizontal: 12,
-    backgroundColor: '#FFFCFE',
+    backgroundColor: "#FFFCFE",
   },
   input: {
     flex: 1,
     minHeight: 48,
     paddingVertical: 10,
-    color: '#292842',
+    color: "#292842",
     fontSize: 15,
   },
   unit: {
-    color: '#777382',
+    color: "#777382",
     fontSize: 13,
     marginLeft: 8,
   },
+  notificationRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+  },
+  notificationIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFF0F4",
+  },
+  notificationIconText: {
+    color: "#E75E86",
+    fontSize: 25,
+  },
+  notificationCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  notificationDivider: {
+    height: 1,
+    backgroundColor: "#F1EAF0",
+  },
+  reminderHeading: {
+    color: "#343348",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  reminderTimes: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  reminderTimeItem: {
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+    borderRadius: 12,
+    backgroundColor: "#FFF0F4",
+  },
+  reminderTimeText: {
+    color: "#B34E70",
+    fontSize: 12,
+    fontWeight: "700",
+  },
   saveButton: {
     minHeight: 52,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
     borderRadius: 16,
-    backgroundColor: '#E75E86',
-    shadowColor: '#B34E70',
+    backgroundColor: "#E75E86",
+    shadowColor: "#B34E70",
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.18,
     shadowRadius: 7,
@@ -508,21 +748,21 @@ const styles = StyleSheet.create({
     opacity: 0.65,
   },
   saveButtonText: {
-    color: '#FFFFFF',
+    color: "#FFFFFF",
     fontSize: 15,
-    fontWeight: '700',
+    fontWeight: "700",
   },
   saveMessage: {
     marginTop: -8,
-    textAlign: 'center',
+    textAlign: "center",
     fontSize: 13,
     lineHeight: 19,
   },
   saveSuccess: {
-    color: '#287A5A',
+    color: "#287A5A",
   },
   saveError: {
-    color: '#B4233C',
+    color: "#B4233C",
   },
   pressed: {
     opacity: 0.75,
